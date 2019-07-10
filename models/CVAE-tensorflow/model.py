@@ -2,7 +2,6 @@ import numpy as np
 import tensorflow as tf
 import time
 
-from utils.output_projection import MyDense
 from utils import SummaryHelper
 from utils.basic_decoder import MyBasicDecoder
 
@@ -17,9 +16,9 @@ class CVAEModel(object):
 			self.origin_responses_length = tf.placeholder(tf.int32, (None,), 'dec_lens')  # [batch]
 
 		# deal with original data to adapt encoder and decoder
-		max_sen_length = tf.shape(self.contexts)[2]
+		max_sent_length = tf.shape(self.contexts)[2]
 		max_cxt_size = tf.shape(self.contexts)[1]
-		self.posts_input = tf.reshape(self.contexts, [-1, max_sen_length]) # [batch * cxt_len, utt_len]
+		self.posts_input = tf.reshape(self.contexts, [-1, max_sent_length]) # [batch * cxt_len, utt_len]
 		self.flat_posts_length = tf.reshape(self.posts_length, [-1]) # [batch * cxt_len]
 
 		decoder_len = tf.shape(self.origin_responses)[1]
@@ -95,8 +94,8 @@ class CVAEModel(object):
 
 		with tf.name_scope("decode"):
 			# get output projection function
-			dec_init_fn = MyDense(args.dh_size, use_bias=True)
-			output_fn = MyDense(data.vocab_size, use_bias=True)
+			dec_init_fn = tf.layers.Dense(args.dh_size, use_bias=True)
+			output_fn = tf.layers.Dense(data.vocab_size, use_bias=True)
 
 			with tf.name_scope("training"):
 				decoder_input = responses_dec_input
@@ -142,7 +141,7 @@ class CVAEModel(object):
 				decoder_infer = MyBasicDecoder(cell_dec, infer_helper, dec_init_state, output_layer=output_fn,
 											   _aug_context_vector=None)
 				infer_outputs, _, _ = tf.contrib.seq2seq.dynamic_decode(decoder_infer, impute_finished=True,
-																		maximum_iterations=args.max_sen_length,
+																		maximum_iterations=args.max_sent_length,
 																		scope="decoder_rnn")
 				self.decoder_distribution = infer_outputs.rnn_output
 				self.generation_index = tf.argmax(tf.split(self.decoder_distribution,
@@ -303,7 +302,7 @@ class CVAEModel(object):
 		while batch_data is not None:
 			batch = self._cut_batch_data(batch_data,\
 							0, np.max(batch_data['turn_length']))
-			batch['candidate'] = batch_data['candidate']
+			batch['candidate_allvocabs'] = batch_data['candidate_allvocabs']
 			yield batch
 			batch_data = data.get_next_batch('multi_ref')
 
@@ -455,7 +454,7 @@ class CVAEModel(object):
 				metric1_data = {
 						'sent_allvocabs': np.expand_dims(cut_batch_data['responses'], 1),
 						'sent_length': np.expand_dims(responses_length, 1),
-						'gen_log_prob': np.expand_dims(cut_batch_data['gen_prob'], 1)
+						'multi_turn_gen_log_prob': np.expand_dims(cut_batch_data['gen_prob'], 1)
 						}
 				metric1.forward(metric1_data)
 				valid_index = [idx for idx, length in 
@@ -474,10 +473,10 @@ class CVAEModel(object):
 
 			for conv in conv_data:
 				metric2_data = {
-						'context_allvocabs': np.array(padding(conv['contexts'])),
+						#'context_allvocabs': np.array(padding(conv['contexts'])),
 						'turn_length': np.array([len(conv['contexts'])], dtype=np.int32),
-						'reference_allvocabs':np.array(padding(conv['responses'])),
-						'gen': np.array(padding(conv['generations'], pad_go_id=True))
+						'sent_allvocabs':np.array(padding(conv['responses'])),
+						'multi_turn_gen': np.array(padding(conv['generations'], pad_go_id=True))
 						}
 				metric2.forward(metric2_data)
 			batched_data = data.get_next_batch("test")
@@ -489,7 +488,7 @@ class CVAEModel(object):
 		with open(test_file, 'a') as f:
 			print("Test Result:")
 			for key, value in res.items():
-				if isinstance(value, float):
+				if isinstance(value, float) or isinstance(value, int):
 					print("\t%s:\t%f" % (key, value))
 					f.write("%s:\t%f\n" % (key, value))
 			for i, context in enumerate(res['context']):
@@ -501,17 +500,19 @@ class CVAEModel(object):
 				f.write("\n")
 
 		print("result output to %s" % test_file)
+		return {key: val for key, val in res.items() if key not in ['context', 'reference', 'gen']}
 
-	def test_multi_ref(self, sess, data, embed, args):
+	def test_multi_ref(self, sess, data, word2vec, args):
 		def process_cands(candidates):
 			res = []
 			for cands in candidates:
 				tmp = []
 				for sent in cands:
-					tmp.append([wid if wid < data.vocab_size else data.unk_id for wid in sent])
+					tmp.append([data.go_id] + \
+						[wid if wid < data.vocab_size else data.unk_id for wid in sent] + [data.eos_id])
 				res.append(tmp)
 			return res
-		prec_rec_metrics = data.get_precision_recall_metric(embed)
+		prec_rec_metrics = data.get_multi_ref_metric(generated_num_per_context=args.repeat_N, word2vec=word2vec)
 		for batch_data in self.multi_reference_batches(data, args.batch_size):
 			responses = []
 			for _ in range(args.repeat_N):
@@ -520,11 +521,13 @@ class CVAEModel(object):
 					resp = list(resp)
 					if rid == len(responses):
 						responses.append([])
-					if data.eos_id in resp:
-						resp = resp[:resp.index(data.eos_id)]
-					if len(resp) > 0:
-						responses[rid].append(resp)
-			metric_data = {'resp': process_cands(batch_data['candidate']), 'gen': responses}
+					# if data.eos_id in resp:
+					# 	resp = resp[:resp.index(data.eos_id)]
+					resp = data.trim_index(resp)
+					if len(resp) == 0:
+						resp = [data.unk_id]
+					responses[rid].append(resp + [data.eos_id])
+			metric_data = {'candidate_allvocabs': process_cands(batch_data['candidate_allvocabs']), 'multiple_gen_key': responses}
 			prec_rec_metrics.forward(metric_data)
 
 		res = prec_rec_metrics.close()
@@ -534,6 +537,8 @@ class CVAEModel(object):
 			print("Test Multi Reference Result:")
 			f.write("Test Multi Reference Result:\n")
 			for key, val in res.items():
-				print("\t{}\t{}".format(key, val))
-				f.write("\t{}\t{}".format(key, val) + "\n")
+				if isinstance(val, float) or isinstance(val, int):
+					print("\t{}\t{}".format(key, val))
+					f.write("\t{}\t{}".format(key, val) + "\n")
 			f.write("\n")
+		return res

@@ -2,114 +2,34 @@
 A command library help user upload their results to dashboard.
 '''
 #!/usr/bin/env python
-import logging
 import os
 import os.path
 import json
 import sys
 import argparse
 import importlib
-import subprocess
-from subprocess import PIPE
-import re
 import traceback
 
 import requests
 import cotk
+from cotk.scripts import _utils
+from cotk.scripts import entry
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(os.path.join(__file__, os.pardir))))
-
-LOGGER = logging.getLogger(__name__)
-LOGGER.setLevel(level=logging.INFO)
-FORMAT = logging.Formatter("%(levelname)s: %(message)s")
-SH = logging.StreamHandler(stream=sys.stdout)
-SH.setFormatter(FORMAT)
-LOGGER.addHandler(SH)
-
-DASHBOARD_URL = os.getenv("COTK_DASHBOARD_URL", None) #TODO: add a online dash board url
-REPORT_URL = DASHBOARD_URL + "/upload"
-SHOW_URL = DASHBOARD_URL + "/show?id=%d"
-
-def assert_repo_exist():
-	'''Assert cwd is in a git repo.'''
-	try:
-		in_git = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], stdout=PIPE, stderr=PIPE)
-	except FileNotFoundError as _:
-		raise RuntimeError("Git is not found. You must install git and \
-make sure git command can be used.")
-
-	if in_git.stdout.decode().strip() != "true":
-		raise RuntimeError("You have to make a commit in your git repo first.")
-
-def check_repo_clean():
-	'''Check whether repo is clean.
-	Return True if clean, False if dirty.'''
-	git_diff = subprocess.run(["git", "diff", "HEAD"], stdout=PIPE, stderr=PIPE)
-	if git_diff.stdout.decode():
-		return False
-	else:
-		return True
-
-def get_repo_workingdir():
-	'''Get relative path of cwd from git repo root.'''
-	git_prefix = subprocess.run(["git", "rev-parse", "--show-prefix"], stdout=PIPE, stderr=PIPE)
-	return git_prefix.stdout.decode().strip()
-
-def get_repo_remote():
-	'''Get remote repo name on github'''
-	git_upstream = subprocess.run(["git", "rev-parse", "--symbolic-full-name", "--abbrev-ref", \
-			"@{upstream}"], stdout=PIPE, stderr=PIPE)
-	err = git_upstream.stderr.decode()
-	if err:
-		if re.match(r"fatal: no upstream configured for branch '\s*?'", err):
-			raise RuntimeError("No upstream branch, you have to set upstream branch for your repo. \
-E.g. git push -u origin master. ")
-		else:
-			raise RuntimeError("Unkown error when getting upstream branch：%s" % err)
-
-	upstream_out = git_upstream.stdout.decode().split('/')
-	remote_name, remote_branch = upstream_out[0], upstream_out[1] #pylint: disable=unused-variable
-
-	git_remote = subprocess.run(["git", "remote", "-v"], stdout=PIPE, stderr=PIPE)
-	ssh_reg = re.search(r"%s\s+git@github.com:(\S+?)/(\S+?)\.git\s+\(push\)" % \
-			remote_name, git_remote.stdout.decode())
-	http_reg = re.search(r"%s\s+https://github\.com/(\S+?)/(\S+?)\.git\s+\(push\)" % \
-			remote_name, git_remote.stdout.decode())
-	if ssh_reg is None and http_reg is None:
-		raise RuntimeError("No remote named %s, please use 'git remote add' to identify \
-your remote repo on github." % git_remote)
-	if ssh_reg:
-		git_user = ssh_reg.group(1)
-		git_repo = ssh_reg.group(2)
-	else:
-		git_user = http_reg.group(1)
-		git_repo = http_reg.group(2)
-
-	return git_user, git_repo
-
-def get_repo_commit():
-	'''Return the commit sha of HEAD'''
-	git_head = subprocess.run(["git", "rev-parse", "HEAD"], stdout=PIPE, stderr=PIPE)
-	if git_head.stdout.decode().find("fatal: Needed a single revision") >= 0:
-		raise RuntimeError("You have to make a commit in your git repo first.")
-	return git_head.stdout.decode().strip()
-
-def assert_commit_exist(git_user, git_repo, git_commit):
-	'''Assert commit is available'''
-	url = "https://github.com/{}/{}/archive/{}.zip".format(git_user, git_repo, git_commit)
-	res = requests.head(url)
-	if not res.ok:
-		raise RuntimeError("Commit {} is not existed on github:{}/{}. \
-Have you pushed your commit? Or make it public?".format( \
-			git_commit, git_repo, git_user \
-		))
+LOGGER = entry.LOGGER
+REPORT_URL = entry.REPORT_URL
+SHOW_URL = entry.SHOW_URL
+QUERY_URL = entry.QUERY_URL
 
 def run_model(entry, args):
 	'''Run the model and record the info of library'''
 	# before run model
 	# cotk recorder start
 	cotk.start_recorder()
+	sys.path.insert(0, os.getcwd())
 	model = importlib.import_module(entry)
+
+	if args is None:
+		args = []
 
 	try:
 		model.run(*args)
@@ -123,7 +43,7 @@ def run_model(entry, args):
 
 def upload_report(result_path, entry, args, \
 	git_user, git_repo, git_commit, \
-	cotk_record_information):
+	cotk_record_information, token):
 	'''Upload report to dashboard. Return id of the new record.'''
 	# check result file existence
 	# get git link
@@ -135,7 +55,7 @@ def upload_report(result_path, entry, args, \
 		raise json.JSONDecodeError("{} is not a valid json. {}".format(result_path, err.msg),\
 				err.doc, err.pos)
 
-	working_dir = get_repo_workingdir()
+	working_dir = _utils.get_repo_workingdir()
 
 	upload_information = { \
 		"entry": entry, \
@@ -147,63 +67,69 @@ def upload_report(result_path, entry, args, \
 		"record_information": cotk_record_information, \
 		"result": json.dumps(result) \
 	}
-	LOGGER.info("Save your report locally at .cotk_upload_backup")
-	json.dump(upload_information, open(".cotk_upload_backup", 'w'))
+	LOGGER.info("Save your report locally at {}".format(entry.BACKUP_FILE))
+	json.dump(upload_information, open(entry.BACKUP_FILE, 'w'))
 	LOGGER.info("Uploading your report...")
-	res = requests.post(REPORT_URL, upload_information)
+	res = requests.post(REPORT_URL, {"data": upload_information, "token": token})
 	res = json.loads(res.text)
 	if res['code'] != "ok":
 		raise RuntimeError("upload error. %s" % json.loads(res['err']))
 	return res['id']
 
-def report(args):
-	'''Entrance of report'''
-	parser = argparse.ArgumentParser(prog="cotk-report", \
-		description='Report model performance to cotk model dashboard.')
+def get_local_token():
+	'''Read locally-saved token'''
+	if os.path.exists(entry.CONFIG_FILE):
+		return json.load(open(entry.CONFIG_FILE, 'r'))['token']
+	else:
+		raise RuntimeError("Please config your token, \n" + \
+						   "either by setting it temporarily in cotk\n" + \
+						   "or by calling `cotk config`")
+
+def run(args):
+	'''Entrance of run'''
+	parser = argparse.ArgumentParser(prog="cotk run", \
+		description='Run model and report performance to cotk dashboard.')
+	parser.add_argument('--token', type=str, default=None)
 	parser.add_argument('--result', type=str, default="result.json", \
 		help='Path to result file. Default: result.json')
+	parser.add_argument("--only-run", action="store_true", \
+		help="Just run my model, don't collect any information or upload anything.")
 	parser.add_argument('--only-upload', action="store_true", \
-		help="Don't run your model, just upload the existing result. \
+		help="Don't run my model, just upload the existing result. \
 		(Some information will be missing and this option is not recommended.)")
-	parser.add_argument('entry', type=str, default="main", nargs='?',\
+	parser.add_argument('--entry', type=str, default="main", nargs='?',\
 		help="Entry of your model. Default: main")
 	parser.add_argument('args', nargs=argparse.REMAINDER)
 
 	cargs = parser.parse_args(args)
 
-	assert_repo_exist()
-	git_user, git_repo = get_repo_remote()
-	git_commit = get_repo_commit()
-	assert_commit_exist(git_user, git_repo, git_commit)
-	LOGGER.info("git information detected.")
-	LOGGER.info("user: %s, repo: %s, commit sha1: %s", git_user, git_repo, git_commit)
+	if not cargs.only_run:
+		if cargs.token:
+			token = cargs.token
+		else:
+			token = get_local_token()
+		_utils.assert_repo_exist()
+		git_user, git_repo = _utils.get_repo_remote()
+		git_commit = _utils.get_repo_commit()
+		_utils.assert_commit_exist(git_user, git_repo, git_commit)
+		LOGGER.info("git information detected.")
+		LOGGER.info("user: %s, repo: %s, commit sha1: %s", git_user, git_repo, git_commit)
 	if cargs.only_upload:
-		LOGGER.warning("Your model is not runing, only upload existing result. \
+		LOGGER.warning("Your model is not running, only upload existing result. \
 Some information will be missing and it is not recommended.")
 		cotk_record_information = None
 	else:
-		if not check_repo_clean():
+		if not cargs.only_run and not _utils.check_repo_clean():
 			raise RuntimeError("Your changes of code hasn't been committed. Use \"git status\" \
 to check your changes.")
+
 		LOGGER.info("Running your model at '%s' with arguments: %s.", cargs.entry, cargs.args)
 		cotk_record_information = run_model(cargs.entry, cargs.args)
+		LOGGER.info("Your model has exited.")
 
-	LOGGER.info("Collecting info for update...")
-	upload_id = upload_report(cargs.result, cargs.entry, cargs.args, \
-		git_user, git_repo, git_commit, \
-		cotk_record_information)
-	LOGGER.info("Upload complete. Check %s for your report.", SHOW_URL % upload_id)
-
-def main():
-	'''Entry of command line'''
-	sys.path.append(".")
-	if len(sys.argv) > 1 and sys.argv[1] == "debug":
-		report(sys.argv[2:])
-	else:
-		try:
-			report(sys.argv[1:])
-		except Exception as err: #pylint: disable=broad-except
-			print("%s: %s" % (type(err).__name__, err))
-
-if __name__ == "__main__":
-	report(sys.argv[1:])
+	if not cargs.only_run:
+		LOGGER.info("Collecting info for update...")
+		upload_id = upload_report(cargs.result, cargs.entry, cargs.args, \
+			git_user, git_repo, git_commit, \
+			cotk_record_information, token)
+		LOGGER.info("Upload complete. Check %s for your report.", SHOW_URL % upload_id)

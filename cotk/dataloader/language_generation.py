@@ -4,15 +4,18 @@ from itertools import chain
 
 import numpy as np
 
-from .._utils.unordered_hash import UnorderedSha256
+# from .._utils.unordered_hash import UnorderedSha256
 from .._utils.file_utils import get_resource_file_path
 from .dataloader import GenerationBase
 from ..metric import MetricChain, PerplexityMetric, LanguageGenerationRecorder, \
-	FwBwBleuCorpusMetric, SelfBleuCorpusMetric, HashValueRecorder
+	FwBwBleuCorpusMetric, SelfBleuCorpusMetric
 
 # pylint: disable=W0223
 class LanguageGeneration(GenerationBase):
 	r"""Base class for language modelling datasets. This is an abstract class.
+
+	This class is supported for language modeling tasks or language generation tasks
+	without any inputs.
 
 	Arguments:{ARGUMENTS}
 
@@ -22,43 +25,45 @@ class LanguageGeneration(GenerationBase):
 	ARGUMENTS = GenerationBase.ARGUMENTS
 	ATTRIBUTES = GenerationBase.ATTRIBUTES
 
-	def get_batch(self, key, index, needhash=False):
+	def get_batch(self, key, index):
 		'''Get a batch of specified `index`.
 
 		Arguments:
-			key (str): must be contained in `key_name`
+			key (str): key name of dataset, must be contained in ``self.key_name``.
 			index (list): a list of specified index
-			needhash (bool): whether to return a hashvalue
-				representing this batch of data. Default: False.
 
 		Returns:
 			(dict): A dict at least contains:
 
-				* sent_length(list): A 1-d list, the length of sentence in each batch.
-				  Size: `[batch_size]`
-				* sent(:class:`numpy.array`): A 2-d padding array containing id of words.
-				  Only provide valid words. `unk_id` will be used if a word is not valid.
-				  Size: `[batch_size, max(sent_length)]`
-				* sent_allvocabs(:class:`numpy.array`): A 2-d padding array containing id of words.
-				  Provide both valid and invalid words.
-				  Size: `[batch_size, max(sent_length)]`
-				* hashvalue(bytes): (If `needhash` is True.) A bytes representing hash value of the data.
+			* **sent_length** (:class:`numpy.ndarray`): A 1-d array, the length of sentence in each batch.
+			  Size: ``[batch_size]``
+			* **sent** (:class:`numpy.ndarray`): A 2-d padding array containing id of words.
+			  Only provide valid words. ``unk_id`` will be used if a word is not valid.
+			  Size: ``[batch_size, max(sent_length)]``
+			* **sent_allvocabs** (:class:`numpy.ndarray`): A 2-d padding array containing id of words.
+			  Provide both valid and invalid words.
+			  Size: ``[batch_size, max(sent_length)]``
 
 		Examples:
-			>>> # vocab_list = ["<pad>", "<unk>", "<go>", "<eos>", "how", "are", "you",
-			>>> #	"hello", "i", "am", "fine"]
-			>>> dataloader.get_batch('train', [0, 1])
-			{
-				"sent": [
-						[2, 4, 5, 6, 3],   # first sentence: <go> how are you <eos>
-						[2, 7, 3, 0, 0],   # second sentence:  <go> hello <eos> <pad> <pad>
-					],
-				"sent_length": [5, 3], # length of sentences
-			}
 
-		Todo:
-			* add invalid_vocab examples
-			* mark which array is np.array
+			>>> # all_vocab_list = ["<pad>", "<unk>", "<go>", "<eos>", "how", "are", "you",
+			>>> #	"hello", "i", "am", "fine"]
+			>>> # vocab_size = 9
+			>>> # vocab_list = ["<pad>", "<unk>", "<go>", "<eos>", "how", "are", "you", "hello", "i"]
+			>>> dataloader.get_batch('train', [0, 1, 2])
+			{
+				"sent": numpy.array([
+					[2, 4, 5, 6, 3, 0],   # first sentence: <go> how are you <eos> <pad>
+					[2, 7, 3, 0, 0, 0],   # second sentence:  <go> hello <eos> <pad> <pad> <pad>
+					[2, 7, 8, 1, 1, 3]    # third sentence: <go> hello i <unk> <unk> <eos>
+				]),
+				"sent_length": numpy.array([5, 3, 6]), # length of sentences
+				"sent_allvocabs": numpy.array([
+					[2, 4, 5, 6, 3, 0],   # first sentence: <go> how are you <eos> <pad>
+					[2, 7, 3, 0, 0, 0],   # second sentence:  <go> hello <eos> <pad> <pad> <pad>
+					[2, 7, 8, 9, 10, 3]   # third sentence: <go> hello i am fine <eos>
+				]),
+			}
 		'''
 		if key not in self.key_name:
 			raise ValueError("No set named %s." % key)
@@ -72,53 +77,62 @@ class LanguageGeneration(GenerationBase):
 			sentence = self.data[key]['sent'][j]
 			res["sent"][i, :len(sentence)] = sentence
 
-		if needhash:
-			unordered_hash = UnorderedSha256()
-			for j in index:
-				unordered_hash.update_data(repr((self.data[key]['sent'][j], self.valid_vocab_len)).encode())
-			res["hashvalue"] = unordered_hash.digest()
-			# hashvalue must be unique for representing the whole batch
-
 		res["sent_allvocabs"] = res_sent.copy()
 		res_sent[res_sent >= self.valid_vocab_len] = self.unk_id
 		return res
 
 	def get_teacher_forcing_metric(self, gen_log_prob_key="gen_log_prob"):
-		'''Get metric for teacher-forcing mode.
+		'''Get metrics for teacher-forcing. In other words, this function
+		provides metrics for language modelling task.
 
 		It contains:
 
 		* :class:`.metric.PerplexityMetric`
 
 		Arguments:
-				gen_prob_key (str): default: `gen_prob`. Refer to :class:`.metric.PerplexityMetric`
+			gen_log_prob_key (str): The key of predicted log probablilty over words.
+				Refer to :class:`.metric.PerplexityMetric`. Default: ``gen_log_prob``.
+
+		Returns:
+			A :class:`.metric.MetricChain` object.
 		'''
 		metric = MetricChain()
-		metric.add_metric(HashValueRecorder(hash_key="teacher_forcing_hashvalue"))
 		metric.add_metric(PerplexityMetric(self, \
 					reference_allvocabs_key='sent_allvocabs', \
 					reference_len_key='sent_length', \
 					gen_log_prob_key=gen_log_prob_key))
 		return metric
 
-	def get_inference_metric(self, gen_key="gen", sample=1000):
-		'''Get metric for inference.
+	def get_inference_metric(self, gen_key="gen", sample=1000, seed=1229):
+		'''Get metrics for inference. In other words, this function provides metrics for
+		language generation tasks.
 
 		It contains:
 
+		* :class:`.metric.SelfBleuCorpusMetric`
+		* :class:`.metric.FwBwBleuCorpusMetric`
 		* :class:`.metric.LanguageGenerationRecorder`
 
 		Arguments:
-				gen_key (str): default: "gen". Refer to :class:`.metric.LanguageGenerationRecorder`
-				sample (int): default: 1000. Refer to :class:`.metric.SelfBleuCorpusMetric`
+			gen_key (str): The key of generated sentences in index form.
+				Refer to :class:`.metric.LanguageGenerationRecorder`.
+				Default: ``gen``.
+			sample (int): Sample numbers for self-bleu metric.
+				It will be fast but inaccurate if this become small.
+				Refer to :class:`.metric.SelfBleuCorpusMetric`. Default: ``1000``.
+			seed (int): Random seed for sampling.
+				Refer to :class:`.metric.SelfBleuCorpusMetric`. Default: ``1229``.
+
+		Returns:
+			A :class:`.metric.MetricChain` object.
 		'''
 		metric = MetricChain()
-		metric.add_metric(SelfBleuCorpusMetric(self, gen_key=gen_key, sample=sample))
+		metric.add_metric(SelfBleuCorpusMetric(self, gen_key=gen_key, sample=sample, seed=seed))
 		metric.add_metric(FwBwBleuCorpusMetric(self, \
 					reference_test_key="sent", \
 					gen_key=gen_key, \
-					sample=sample))
-		metric.add_metric(HashValueRecorder(hash_key="inference_hashvalue"))
+					sample=sample, \
+					seed=seed))
 		metric.add_metric(LanguageGenerationRecorder(self, gen_key=gen_key))
 		return metric
 
@@ -126,17 +140,17 @@ class MSCOCO(LanguageGeneration):
 	'''A dataloader for preprocessed MSCOCO dataset.
 
 	Arguments:
-			file_id (str): a str indicates the source of MSCOCO dataset.
-			file_type (str): a str indicates the type of MSCOCO dataset. Default: "MSCOCO"
-			valid_vocab_times (int): A cut-off threshold of valid tokens. All tokens appear
-					not less than `min_vocab_times` in **training set** will be marked as valid words.
-					Default: 10.
-			max_sen_length (int): All sentences longer than `max_sen_length` will be shortened
-					to first `max_sen_length` tokens. Default: 50.
-			invalid_vocab_times (int):  A cut-off threshold of invalid tokens. All tokens appear
-					not less than `invalid_vocab_times` in the **whole dataset** (except valid words) will be
-					marked as invalid words. Otherwise, they are unknown words, both in training or
-					testing stages. Default: 0 (No unknown words).
+		file_id (str): A string indicating the source of MSCOCO dataset. Default: ``resources://MSCOCO``.
+				A preset dataset is downloaded and cached.
+		valid_vocab_times (int): A cut-off threshold of valid tokens. All tokens appear
+				not less than `min_vocab_times` in **training set** will be marked as valid words.
+				Default: ``10``.
+		max_sent_length (int): All sentences longer than ``max_sent_length`` will be shortened
+				to first ``max_sent_length`` tokens. Default: ``50``.
+		invalid_vocab_times (int):  A cut-off threshold of invalid tokens. All tokens appear
+				not less than ``invalid_vocab_times`` in the **whole dataset** (except valid words) will be
+				marked as invalid words. Otherwise, they are unknown words, which are ignored both for
+				model or metrics. Default: ``0`` (No unknown words).
 
 	Refer to :class:`.LanguageGeneration` for attributes and methods.
 
@@ -147,18 +161,17 @@ class MSCOCO(LanguageGeneration):
 
 	'''
 
-	def __init__(self, file_id, file_type="MSCOCO", min_vocab_times=10, \
-			max_sen_length=50, invalid_vocab_times=0):
+	def __init__(self, file_id="resources://MSCOCO", min_vocab_times=10, \
+			max_sent_length=50, invalid_vocab_times=0):
 		self._file_id = file_id
-		self._file_path = get_resource_file_path(file_id, file_type)
-		self._file_type = file_type
+		self._file_path = get_resource_file_path(file_id)
 		self._min_vocab_times = min_vocab_times
-		self._max_sen_length = max_sen_length
+		self._max_sent_length = max_sent_length
 		self._invalid_vocab_times = invalid_vocab_times
 		super(MSCOCO, self).__init__()
 
 	def _load_data(self):
-		r'''Loading dataset, invoked by `LanguageGeneration.__init__`
+		r'''Loading dataset, invoked during the initialization of :class:`LanguageGeneration`.
 		'''
 		origin_data = {}
 		for key in self.key_name:
@@ -199,7 +212,7 @@ class MSCOCO(LanguageGeneration):
 		def line2id(line):
 			return ([self.go_id] + \
 					list(map(lambda word: word2id[word] if word in word2id else self.unk_id, line)) \
-					+ [self.eos_id])[:self._max_sen_length]
+					+ [self.eos_id])[:self._max_sent_length]
 
 		data = {}
 		data_size = {}
@@ -225,7 +238,7 @@ class MSCOCO(LanguageGeneration):
 			cut_num = np.sum( \
 				np.maximum( \
 					np.array(length) - \
-					self._max_sen_length + \
+					self._max_sent_length + \
 					1, \
 					0))
 			print( \

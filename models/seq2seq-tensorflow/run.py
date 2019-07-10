@@ -1,6 +1,6 @@
 # coding:utf-8
 
-def run():
+def run(*argv):
 	import argparse
 	import time
 
@@ -17,14 +17,14 @@ def run():
 		help='"train" or "test". Default: train')
 	parser.add_argument('--dataset', type=str, default='OpenSubtitles',
 		help='Dataloader class. Default: OpenSubtitles')
-	parser.add_argument('--datapath', type=str, default='/home/kepei/cotk/models/seq2seq-tf-new/data',
-		help='Directory for data set. Default: ./data')
+	parser.add_argument('--datapath', type=str, default='OpenSubtitles',
+		help='Directory for data set. Default: OpenSubtitles')
 	parser.add_argument('--epoch', type=int, default=100,
 		help="Epoch for trainning. Default: 100")
-	parser.add_argument('--wvclass', type=str, default=None,
-		help="Wordvector class, none for not using pretrained wordvec. Default: None")
-	parser.add_argument('--wvpath', type=str, default='/home/kepei/cotk/models/seq2seq-tf-new/data/glove.6B.300d.txt',
-		help="Directory for pretrained wordvector. Default: ./wordvec")
+	parser.add_argument('--wvclass', type=str, default='Glove',
+		help="Wordvector class, none for not using pretrained wordvec. Default: Glove")
+	parser.add_argument('--wvpath', type=str, default='resources://Glove300d',
+		help="Directory for pretrained wordvector. Default: resources://Glove300d")
 
 	parser.add_argument('--out_dir', type=str, default="./output",
 		help='Output directory for test output. Default: ./output')
@@ -40,7 +40,7 @@ def run():
 		help='Enter debug mode (using ptvsd).')
 	parser.add_argument('--cache', action='store_true',
 		help='Use cache for speeding up load data and wordvec. (It may cause problems when you switch dataset.)')
-	cargs = parser.parse_args()
+	cargs = parser.parse_args(argv)
 
 	# Editing following arguments to bypass command line.
 	args.name = cargs.name or time.strftime("run%Y%m%d_%H%M%S", time.localtime())
@@ -68,7 +68,7 @@ def run():
 	args.batch_size = 128
 	args.grad_clip = 5.0
 	args.show_sample = [0]
-	args.max_sen_length = 50
+	args.max_sent_length = 50
 	args.checkpoint_steps = 1000
 	args.checkpoint_max_to_keep = 5
 
@@ -79,4 +79,5 @@ def run():
 	main(args)
 
 if __name__ == '__main__':
-	run()
+	import sys
+	run(*sys.argv[1:])

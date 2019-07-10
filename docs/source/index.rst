@@ -8,25 +8,35 @@
 cotk documentation
 =================================
 
-cotk is a python package providing utilities for natural language
+``cotk`` is a python package providing utilities for natural language
 generation. It contains benchmark data loader, word vector loader,
 pretrained baseline models and other useful utilities for evaluating
-new models fairly with baselines.
+your models fairly with baselines.
 
 .. toctree::
    :glob:
-   :maxdepth: 1
+   :maxdepth: 2
    :caption: Notes
 
    notes/*
 
 .. toctree::
-   :maxdepth: 1
+   :maxdepth: 2
    :caption: Package Reference
 
    dataloader
    wordvector
    metric
+
+.. toctree::
+   :glob:
+   :maxdepth: 2
+   :caption: Model Tutorial
+
+   models/LanguageGeneration/index
+   models/SingleTurnDialog/index
+   models/MultiTurnDialog/index
+
 
 Indices and tables
 ==================

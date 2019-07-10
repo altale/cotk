@@ -3,6 +3,7 @@ import random
 from run import run
 from main import main
 import os
+import json
 import shutil
 cwd = os.path.abspath(os.path.dirname(__file__))
 path = os.path.split(cwd)[0]
@@ -18,64 +19,55 @@ def setup_function(function):
 	torch.manual_seed(0)
 	torch.cuda.manual_seed_all(0)
 	try:
-		shutil.rmtree(cwd + '/output_test')
-	except Exception:
+		shutil.rmtree(os.path.join(cwd, 'output_test'), ignore_errors=True)
+		shutil.rmtree(os.path.join(cwd, 'tensorboard_test'), ignore_errors=True)
+		shutil.rmtree(os.path.join(cwd, 'model_test'), ignore_errors=True)
+		shutil.rmtree(os.path.join(cwd, 'cache_test'), ignore_errors=True)
+		os.mkdirs(os.path.join(cwd, 'output_test'), exist_ok=True)
+		os.mkdirs(os.path.join(cwd, 'tensorboard_test'), exist_ok=True)
+		os.mkdirs(os.path.join(cwd, 'model_test'), exist_ok=True)
+		os.mkdirs(os.path.join(cwd, 'cache_test'), exist_ok=True)
+	except Exception as e:
 		pass
-	try:
-		shutil.rmtree(cwd + '/tensorboard_test')
-	except Exception:
-		pass
-	try:
-		shutil.rmtree(cwd + '/model_test')
-	except Exception:
-		pass
-	try:
-		shutil.rmtree(cwd + '/cache_test')
-	except Exception:
-		pass
-	os.mkdir(cwd + '/output_test')
-	os.mkdir(cwd + '/tensorboard_test')
-	os.mkdir(cwd + '/model_test')
-	os.mkdir(cwd + '/cache_test')
 
 def teardown_function(function):
-	shutil.rmtree(cwd + '/output_test')
-	shutil.rmtree(cwd + '/tensorboard_test')
-	shutil.rmtree(cwd + '/model_test')
-	shutil.rmtree(cwd + '/cache_test')
+	shutil.rmtree(os.path.join(cwd, 'output_test'), ignore_errors=True)
+	shutil.rmtree(os.path.join(cwd, 'tensorboard_test'), ignore_errors=True)
+	shutil.rmtree(os.path.join(cwd, 'model_test'), ignore_errors=True)
+	shutil.rmtree(os.path.join(cwd, 'cache_test'), ignore_errors=True)
 
 def modify_args(args):
 	args.cuda = False
 	args.restore = None
 	args.wvclass = 'Glove'
-	args.wvpath = path + '/tests/wordvector/dummy_glove'
-	args.out_dir = cwd + '/output_test'
-	args.log_dir = cwd + '/tensorboard_test'
-	args.model_dir = cwd + '/model_test'
-	args.cache_dir = cwd + '/cache_test'
+	args.wvpath = os.path.join(path, 'tests', 'wordvector', 'dummy_glove', '300d')
+	args.out_dir = os.path.join(cwd, 'output_test')
+	args.log_dir = os.path.join(cwd, 'tensorboard_test')
+	args.model_dir = os.path.join(cwd, 'model_test')
+	args.cache_dir = os.path.join(cwd, 'cache_test')
 
 	args.name = 'test_seq2seq_pytorch'
 	args.wvclass = 'Glove'
 	args.epochs = 1
 	args.batch_per_epoch = 5
 	args.batch_size = 5
-	args.datapath = path + '/tests/dataloader/dummy_opensubtitles'
+	args.datapath = os.path.join(path, 'tests', 'dataloader', 'dummy_opensubtitles')
 
 def test_train(mocker):
-	def side_effect_train(args):
+	def side_effect_train(args, *others):
 		modify_args(args)
 		args.mode = 'train'
-		main(args)
-	def side_effect_restore(args):
+		main(args, *others)
+	def side_effect_restore(args, *others):
 		modify_args(args)
 		args.mode = 'train'
 		args.restore = 'last'
-		main(args)
-	def side_effect_cache(args):
+		main(args, *others)
+	def side_effect_cache(args, *others):
 		modify_args(args)
 		args.mode = 'train'
 		args.cache = True
-		main(args)
+		main(args, *others)
 	mock = mocker.patch('main.main', side_effect=side_effect_train)
 	run()
 	mock.side_effect = side_effect_restore
@@ -84,9 +76,15 @@ def test_train(mocker):
 	run()
 
 def test_test(mocker):
-	def side_effect_test(args):
+	def side_effect_test(args, *others):
 		modify_args(args)
 		args.mode = 'test'
-		main(args)
+		main(args, *others)
 	mock = mocker.patch('main.main', side_effect=side_effect_test)
 	run()
+	old_res = json.load(open("./result.json", "r"))
+	run()
+	new_res = json.load(open("./result.json", "r"))
+	for key in old_res:
+		if key[-9:] == 'hashvalue':
+			assert old_res[key] == new_res[key]
